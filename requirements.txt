@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+xgboost
+joblib
+requests
+beautifulsoup4
+playwright
+fastapi
+uvicorn[standard]
+python-multipart
