@@ -24,7 +24,7 @@ MODEL_PATH = ROOT_DIR / "models" / "xgb_spam_model.pkl"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from feature_extract import SELECTED_FEATURES, extract_feature_dict  # noqa: E402
+from feature_extract import SELECTED_FEATURES, extract_feature_dict, rule_based_spam_score  # noqa: E402
 
 
 TEXT_KEYS = ["comment_text", "Content", "content", "text", "comment", "message", "body"]
@@ -96,6 +96,21 @@ def read_csv_upload(file_bytes: bytes) -> list[dict[str, Any]]:
     return [dict(row) for row in reader]
 
 
+def get_model_feature_names(model) -> list[str]:
+    feature_names = getattr(model, "feature_names_in_", None)
+    if feature_names is not None:
+        return [str(name) for name in feature_names]
+
+    try:
+        booster_names = model.get_booster().feature_names
+        if booster_names:
+            return [str(name) for name in booster_names]
+    except Exception:
+        pass
+
+    return SELECTED_FEATURES
+
+
 def predict_record(model, record: dict[str, Any], row_number: int, threshold: float) -> Optional[dict[str, Any]]:
     text = pick_field(record, TEXT_KEYS)
     if not text.strip():
@@ -104,14 +119,17 @@ def predict_record(model, record: dict[str, Any], row_number: int, threshold: fl
     created_at = pick_field(record, TIME_KEYS)
     rating = pick_float(record, RATING_KEYS)
     feature_values = extract_feature_dict(text, created_at, rating)
-    feature_row = [float(feature_values.get(name, 0.0)) for name in SELECTED_FEATURES]
-    feature_df = pd.DataFrame([feature_row], columns=SELECTED_FEATURES)
+    model_feature_names = get_model_feature_names(model)
+    feature_row = [float(feature_values.get(name, 0.0)) for name in model_feature_names]
+    feature_df = pd.DataFrame([feature_row], columns=model_feature_names)
 
     if hasattr(model, "predict_proba"):
-        spam_score = float(model.predict_proba(feature_df)[0][1])
+        ml_score = float(model.predict_proba(feature_df)[0][1])
     else:
-        spam_score = float(model.predict(feature_df)[0])
+        ml_score = float(model.predict(feature_df)[0])
 
+    rule_score = rule_based_spam_score(text, created_at, rating)
+    spam_score = max(ml_score, rule_score)
     is_spam = int(spam_score >= threshold)
 
     return {
@@ -121,6 +139,8 @@ def predict_record(model, record: dict[str, Any], row_number: int, threshold: fl
         "created_at": created_at,
         "rating": rating,
         "spam_score": round(spam_score, 6),
+        "ml_score": round(ml_score, 6),
+        "rule_score": round(rule_score, 6),
         "is_spam": is_spam,
         "label": "Spam" if is_spam else "Normal",
         "features": {name: safe_number(feature_values.get(name, 0.0)) for name in SELECTED_FEATURES},
